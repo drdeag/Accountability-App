@@ -1,0 +1,78 @@
+name: Android APK (Quickstart)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (not used, but keeps Actions happy)
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK platforms & build-tools
+        run: |
+          yes | sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+
+      - name: Create minimal Android project (Java)
+        run: |
+          mkdir -p quickapp/app/src/main/java/com/dev/accountability
+          mkdir -p quickapp/app/src/main/res/layout
+          mkdir -p quickapp/app/src/main/res/values
+
+          cat > quickapp/settings.gradle << 'EOF'
+          pluginManagement {
+            repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+            repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+            repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "AccountabilityQuickstart"
+          include(":app")
+          EOF
+
+          cat > quickapp/build.gradle << 'EOF'
+          // root build file (empty on purpose)
+          EOF
+
+          cat > quickapp/gradle.properties << 'EOF'
+          org.gradle.jvmargs=-Xmx2048m
+          android.useAndroidX=true
+          EOF
+
+          cat > quickapp/app/build.gradle << 'EOF'
+          plugins {
+            id 'com.android.application' version '8.4.1'
+          }
+          android {
+            namespace 'com.dev.accountability'
+            compileSdk 34
+            defaultConfig {
+              applicationId "com.dev.accountability"
+              minSdk 26
+              targetSdk 34
+              versionCode 1
+              versionName "1.0"
+            }
+            buildTypes {
+              release {
+                minifyEnabled false
+                proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+              }
+            }
+          }
+          dependencies {
+            implementation 'androidx.core:core:1.15.0'
+            implementation 'androidx.appcompat:appcompat:1.7.0'
