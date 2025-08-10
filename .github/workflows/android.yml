@@ -30,26 +30,23 @@ jobs:
         run: sdkmanager "platforms;android-33" "build-tools;33.0.2"
 
       - name: Unzip project (handles spaces/parentheses; searches repo; picks highest #)
+        id: unzip
         shell: bash
         run: |
           set -euo pipefail
 
-          # Collect matches anywhere in repo (root or folders), safely (handles spaces)
           mapfile -d '' matches < <(
             find . -type f \( -name 'Accountability_Project.zip' -o -name 'Accountability_Project (*.zip' \) -print0
           )
 
           if [ ${#matches[@]} -eq 0 ]; then
-            echo "ERROR: No Accountability_Project*.zip found in repo."
-            echo "Files in repo root:"
+            echo "ERROR: No Accountability_Project*.zip found."
             ls -la
             exit 1
           fi
 
-          # Choose the highest-numbered filename (version sort) using just the basename
           pick_basename="$(printf '%s\n' "${matches[@]##*/}" | sort -V | tail -n1)"
 
-          # Resolve the full path that matches the chosen basename
           pick_full=""
           for p in "${matches[@]}"; do
             if [ "${p##*/}" = "$pick_basename" ]; then
@@ -59,19 +56,31 @@ jobs:
           done
 
           echo "Using zip: $pick_full"
-          unzip -q "$pick_full" -d .
+          unzip -q "$pick_full" -d extracted
+
+          # Find gradlew inside extracted folder
+          gradle_dir="$(find extracted -name gradlew -exec dirname {} \; | head -n1)"
+          if [ -z "$gradle_dir" ]; then
+            echo "ERROR: gradlew not found in extracted project."
+            exit 1
+          fi
+          echo "GRADLE_DIR=$gradle_dir" >> $GITHUB_ENV
 
       - name: Force AndroidX + Jetifier
         run: |
-          yes | ./gradlew wrapper --gradle-version 7.4
+          cd "$GRADLE_DIR"
+          chmod +x gradlew
+          ./gradlew wrapper --gradle-version 7.4
           ./gradlew dependencies
           ./gradlew jetifier
 
       - name: Build debug APK
-        run: ./gradlew assembleDebug
+        run: |
+          cd "$GRADLE_DIR"
+          ./gradlew assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ env.GRADLE_DIR }}/app/build/outputs/apk/debug/app-debug.apk
