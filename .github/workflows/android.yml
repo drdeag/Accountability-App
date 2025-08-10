@@ -56,7 +56,7 @@ jobs:
           echo "Using zip: $pick"
           unzip -q "$pick" -d extracted
 
-          # Detect project dir (prefer wrapper; else settings.gradle[.kts])
+          # Detect project dir (prefer Gradle wrapper; else settings.gradle[.kts])
           gradlew_path="$(find extracted -type f -name gradlew -print -quit || true)"
           if [ -n "$gradlew_path" ]; then
             project_dir="$(dirname "$gradlew_path")"
@@ -79,7 +79,7 @@ jobs:
           echo "=== Project tree (top 200) ==="
           (cd "$PROJECT_DIR" && ls -la && echo && find . -maxdepth 3 -type d -print | head -n 200)
 
-      - name: Sanitize AndroidManifest.xml (strip BOM, XML decl, leading blanks)
+      - name: Sanitize AndroidManifest.xml (strip BOM/XML decl/leading blanks)
         shell: bash
         run: |
           set -euo pipefail
@@ -88,25 +88,11 @@ jobs:
             echo "WARNING: No AndroidManifest.xml found under $PROJECT_DIR"
             exit 0
           fi
-          printf '%s\0' "${manifests[@]}" | python3 - <<'PY'
-import sys, re, io, os
-paths = [p for p in sys.stdin.read().split('\0') if p]
-for p in paths:
-    with open(p, 'rb') as f:
-        data = f.read()
-    # Remove UTF-8 BOM if present; normalize newlines
-    text = data.decode('utf-8-sig').replace('\r\n','\n').replace('\r','\n')
-    # Strip leading whitespace
-    text = text.lstrip()
-    # Remove optional XML declaration at top, then strip leading whitespace again
-    if text.startswith('<?xml'):
-        end = text.find('?>')
-        if end != -1:
-            text = text[end+2:].lstrip()
-    with open(p, 'w', encoding='utf-8', newline='\n') as f:
-        f.write(text)
-    print(f"Sanitized: {p}")
-PY
+          for f in "${manifests[@]}"; do
+            # Remove UTF-8 BOM and optional XML declaration + leading whitespace
+            perl -i -0777 -pe 's/^\x{FEFF}//; s/\A(?:\s*<\?xml[^>]*\?>)?\s*//s' "$f"
+            echo "Sanitized: $f"
+          done
 
       - name: Install XML tools (for manifest validation)
         run: sudo apt-get update && sudo apt-get install -y libxml2-utils
