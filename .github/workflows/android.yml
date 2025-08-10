@@ -2,8 +2,7 @@ name: Android APK (Debug)
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   pull_request:
 
 jobs:
@@ -11,9 +10,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Set up job
-        run: echo "Starting build process..."
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -35,52 +31,79 @@ jobs:
         run: |
           set -euo pipefail
 
-          mapfile -d '' matches < <(
-            find . -type f \( -name 'Accountability_Project.zip' -o -name 'Accountability_Project (*.zip' \) -print0
-          )
+          # Collect candidate zips anywhere in the repo. Prefer "Accountability_Project*.zip" but allow any *.zip.
+          mapfile -d '' pref < <(find . -type f -iname 'Accountability_Project*.zip' -print0)
+          mapfile -d '' any  < <(find . -type f -iname '*.zip' -print0)
 
-          if [ ${#matches[@]} -eq 0 ]; then
-            echo "ERROR: No Accountability_Project*.zip found."
-            ls -la
+          if [ ${#pref[@]} -gt 0 ]; then
+            mapfile -t zips < <(printf '%s\n' "${pref[@]##*/}" | sort -V)
+            # Re-map to full paths
+            pick=""
+            for z in "${zips[@]}"; do
+              # find original full path for this basename
+              for p in "${pref[@]}"; do
+                if [ "${p##*/}" = "$z" ]; then pick="$p"; fi
+              done
+            done
+          elif [ ${#any[@]} -gt 0 ]; then
+            # Fallback: any zip (last in version-sort order)
+            pick="$(printf '%s\n' "${any[@]##*/}" | sort -V | tail -n1)"
+            for p in "${any[@]}"; do
+              if [ "${p##*/}" = "$pick" ]; then pick="$p"; fi
+            done
+          else
+            echo "ERROR: No .zip files found in repository." >&2
             exit 1
           fi
 
-          pick_basename="$(printf '%s\n' "${matches[@]##*/}" | sort -V | tail -n1)"
+          echo "Using zip: $pick"
+          unzip -q "$pick" -d extracted
 
-          pick_full=""
-          for p in "${matches[@]}"; do
-            if [ "${p##*/}" = "$pick_basename" ]; then
-              pick_full="$p"
-              break
-            fi
-          done
+          # Prefer a directory that contains gradlew; otherwise use settings.gradle[.kts]
+          gradlew_path="$(find extracted -type f -name 'gradlew' | head -n1 || true)"
+          if [ -n "$gradlew_path" ]; then
+            project_dir="$(dirname "$gradlew_path")"
+            echo "Detected Gradle wrapper in: $project_dir"
+            echo "HAS_WRAPPER=true" >> "$GITHUB_ENV"
+            echo "PROJECT_DIR=$project_dir" >> "$GITHUB_ENV"
+            chmod +x "$project_dir/gradlew"
+            exit 0
+          fi
 
-          echo "Using zip: $pick_full"
-          unzip -q "$pick_full" -d extracted
-
-          # Find gradlew inside extracted folder
-          gradle_dir="$(find extracted -name gradlew -exec dirname {} \; | head -n1)"
-          if [ -z "$gradle_dir" ]; then
-            echo "ERROR: gradlew not found in extracted project."
+          # No wrapper — find a Gradle project root by settings.gradle or settings.gradle.kts
+          settings_dir="$(find extracted -type f \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) -exec dirname {} \; | head -n1 || true)"
+          if [ -z "$settings_dir" ]; then
+            echo "ERROR: Could not locate a Gradle project (no gradlew, no settings.gradle*)." >&2
             exit 1
           fi
-          echo "GRADLE_DIR=$gradle_dir" >> $GITHUB_ENV
 
-      - name: Force AndroidX + Jetifier
-        run: |
-          cd "$GRADLE_DIR"
-          chmod +x gradlew
-          ./gradlew wrapper --gradle-version 7.4
-          ./gradlew dependencies
-          ./gradlew jetifier
+          echo "Detected Gradle project root: $settings_dir"
+          echo "HAS_WRAPPER=false" >> "$GITHUB_ENV"
+          echo "PROJECT_DIR=$settings_dir" >> "$GITHUB_ENV"
 
-      - name: Build debug APK
+      # If there is NO wrapper, set up a Gradle runtime we can use
+      - name: Set up Gradle (no wrapper case)
+        if: env.HAS_WRAPPER == 'false'
+        uses: gradle/gradle-build-action@v3
+        with:
+          # Safe default; adjust if your project requires a specific Gradle version
+          gradle-version: '8.7'
+
+      - name: Build debug APK (with wrapper)
+        if: env.HAS_WRAPPER == 'true'
         run: |
-          cd "$GRADLE_DIR"
-          ./gradlew assembleDebug
+          cd "$PROJECT_DIR"
+          ./gradlew --no-daemon assembleDebug
+
+      - name: Build debug APK (no wrapper)
+        if: env.HAS_WRAPPER == 'false'
+        run: |
+          gradle -p "$PROJECT_DIR" --no-daemon assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
-          path: ${{ env.GRADLE_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          path: |
+            ${{ env.PROJECT_DIR }}/**/outputs/apk/debug/*.apk
+            ${{ env.PROJECT_DIR }}/**/outputs/apk/*/debug/*.apk
