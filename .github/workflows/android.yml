@@ -1,15 +1,15 @@
-name: Android APK (Quickstart)
+name: Android APK (Debug)
 
 on:
   workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (not used, but keeps Actions happy)
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
@@ -25,54 +25,31 @@ jobs:
         run: |
           yes | sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
-      - name: Create minimal Android project (Java)
+      # Unzip your project that you uploaded to the repo root
+      - name: Unzip project
         run: |
-          mkdir -p quickapp/app/src/main/java/com/dev/accountability
-          mkdir -p quickapp/app/src/main/res/layout
-          mkdir -p quickapp/app/src/main/res/values
+          if [ ! -f Accountability_Project.zip ]; then
+            echo "Accountability_Project.zip not found in repo root"; exit 1
+          fi
+          rm -rf project
+          unzip -q Accountability_Project.zip -d project
+          # If the zip has a single top folder, move its contents up
+          INNER=$(find project -mindepth 1 -maxdepth 1 -type d | head -n 1)
+          if [ -d "$INNER/app" ] && [ -f "$INNER/settings.gradle" ]; then
+            shopt -s dotglob
+            mv "$INNER"/* project/
+          fi
+          ls -la project
 
-          cat > quickapp/settings.gradle << 'EOF'
-          pluginManagement {
-            repositories { google(); mavenCentral(); gradlePluginPortal() }
-          }
-          dependencyResolutionManagement {
-            repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-            repositories { google(); mavenCentral() }
-          }
-          rootProject.name = "AccountabilityQuickstart"
-          include(":app")
-          EOF
+      - name: Build debug APK
+        uses: gradle/gradle-build-action@v3
+        with:
+          gradle-version: 8.7
+          build-root-directory: project
+          arguments: assembleDebug
 
-          cat > quickapp/build.gradle << 'EOF'
-          // root build file (empty on purpose)
-          EOF
-
-          cat > quickapp/gradle.properties << 'EOF'
-          org.gradle.jvmargs=-Xmx2048m
-          android.useAndroidX=true
-          EOF
-
-          cat > quickapp/app/build.gradle << 'EOF'
-          plugins {
-            id 'com.android.application' version '8.4.1'
-          }
-          android {
-            namespace 'com.dev.accountability'
-            compileSdk 34
-            defaultConfig {
-              applicationId "com.dev.accountability"
-              minSdk 26
-              targetSdk 34
-              versionCode 1
-              versionName "1.0"
-            }
-            buildTypes {
-              release {
-                minifyEnabled false
-                proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-              }
-            }
-          }
-          dependencies {
-            implementation 'androidx.core:core:1.15.0'
-            implementation 'androidx.appcompat:appcompat:1.7.0'
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: accountability-debug-apk
+          path: project/app/build/outputs/apk/debug/app-debug.apk
