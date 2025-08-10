@@ -11,24 +11,24 @@ jobs:
 
     steps:
       - name: Checkout
-      - name: Detect folders with leading/trailing whitespace
-  shell: bash
-  run: |
-    set -euo pipefail
-    echo "Scanning for directory names with leading/trailing whitespace..."
-    found=0
-    while IFS= read -r -d '' d; do
-      base="$(basename "$d")"
-      stripped="$(printf '%s' "$base" | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//')"
-      if [ "$base" != "$stripped" ]; then
-        echo "⚠️  Problem directory: $d"
-        found=1
-      fi
-    done < <(find . -type d -print0)
-    if [ $found -eq 0 ]; then
-      echo "✅ No directories with leading/trailing whitespace found."
-    fi
         uses: actions/checkout@v4
+
+      # Detect directories that have leading/trailing whitespace (can break paths)
+      - name: Detect folders with leading/trailing whitespace
+        run: |
+          echo "Scanning for directory names with leading/trailing whitespace..."
+          found=0
+          while IFS= read -r -d '' d; do
+            base="$(basename "$d")"
+            stripped="$(printf '%s' "$base" | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//')"
+            if [ "$base" != "$stripped" ]; then
+              echo "⚠️  Problem directory: $d"
+              found=1
+            fi
+          done < <(find . -type d -print0)
+          if [ $found -eq 0 ]; then
+            echo "✅ No directories with leading/trailing whitespace found."
+          fi
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -100,14 +100,13 @@ jobs:
           set -euo pipefail
           cd "$PROJECT_DIR"
           files="$(find . -maxdepth 3 -type f \( -name 'build.gradle' -o -name 'build.gradle.kts' \))"
-          echo "Scanning files:"
-          echo "$files"
+          echo "Scanning files:"; echo "$files"
           compileSdk=""
           buildTools=""
-          if grep -RqsE 'compileSdk(Vers|)\s*[:=]\s*[0-9]+' $files; then
+          if [ -n "$files" ] && grep -RqsE 'compileSdk(Vers|)\s*[:=]\s*[0-9]+' $files; then
             compileSdk="$(grep -RIEho 'compileSdk(?:Version)?\s*[:=]?\s*([0-9]+)' $files | sed -E 's/[^0-9]*([0-9]+).*/\1/' | tail -n1)"
           fi
-          if grep -RqsE 'buildToolsVersion' $files; then
+          if [ -n "$files" ] && grep -RqsE 'buildToolsVersion' $files; then
             buildTools="$(grep -RIEho 'buildToolsVersion\s*["'\'']([0-9]+\.[0-9]+\.[0-9]+)["'\'']' $files | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/' | tail -n1)"
           fi
           echo "Detected compileSdk: ${compileSdk:-<none>}"
@@ -195,6 +194,17 @@ jobs:
           gradle -p "$PROJECT_DIR" --no-daemon --warning-mode all --stacktrace --info assembleDebug 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
           echo "Build (no wrapper) exit code: ${PIPESTATUS[0]}"
           exit ${PIPESTATUS[0]}
+
+      - name: Show last 200 lines of build log (on failure)
+        if: failure()
+        shell: bash
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/build.log" ]; then
+            echo "=== Tail of build.log ==="
+            tail -n 200 "$GITHUB_WORKSPACE/build.log"
+          else
+            echo "No build.log found."
+          fi
 
       - name: Upload APK
         if: always()
