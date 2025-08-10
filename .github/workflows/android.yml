@@ -29,32 +29,37 @@ jobs:
       - name: Install SDK platforms & build-tools
         run: sdkmanager "platforms;android-33" "build-tools;33.0.2"
 
-      - name: Unzip project (handles spaces & parentheses; picks highest #)
+      - name: Unzip project (handles spaces/parentheses; searches repo; picks highest #)
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
 
-          # Look for Accountability_Project.zip or Accountability_Project (#).zip in the repo root
-          matches=()
-          for f in "Accountability_Project.zip" "Accountability_Project ("*").zip"; do
-            for m in $f; do
-              matches+=("$m")
-            done
-          done
+          # Collect matches anywhere in repo (root or folders), safely (handles spaces)
+          mapfile -d '' matches < <(
+            find . -type f \( -name 'Accountability_Project.zip' -o -name 'Accountability_Project (*.zip' \) -print0
+          )
 
           if [ ${#matches[@]} -eq 0 ]; then
-            echo "ERROR: No Accountability_Project*.zip found in repo root."
+            echo "ERROR: No Accountability_Project*.zip found in repo."
             echo "Files in repo root:"
             ls -la
             exit 1
           fi
 
-          # Pick the file with the highest version number (or the plain one if only that exists)
-          pick="$(printf '%s\n' "${matches[@]}" | sort -V | tail -n1)"
-          echo "Using zip: $pick"
+          # Choose the highest-numbered filename (version sort) using just the basename
+          pick_basename="$(printf '%s\n' "${matches[@]##*/}" | sort -V | tail -n1)"
 
-          unzip -q "$pick" -d .
+          # Resolve the full path that matches the chosen basename
+          pick_full=""
+          for p in "${matches[@]}"; do
+            if [ "${p##*/}" = "$pick_basename" ]; then
+              pick_full="$p"
+              break
+            fi
+          done
+
+          echo "Using zip: $pick_full"
+          unzip -q "$pick_full" -d .
 
       - name: Force AndroidX + Jetifier
         run: |
