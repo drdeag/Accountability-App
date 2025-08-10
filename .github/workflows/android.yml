@@ -25,16 +25,21 @@ jobs:
         run: |
           yes | sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
-      - name: Unzip project
+      - name: Unzip project (handles space & parentheses)
+        shell: bash
         run: |
-          if [ ! -f Accountability_Project.zip ]; then
-            echo "Accountability_Project.zip not found in repo root"; exit 1
-          fi
+          set -e
+          ZIP1="Accountability_Project.zip"
+          ZIP2="Accountability_Project (1).zip"
+          if [ -f "$ZIP1" ]; then ZIP="$ZIP1";
+          elif [ -f "$ZIP2" ]; then ZIP="$ZIP2";
+          else echo "ERROR: Neither '$ZIP1' nor '$ZIP2' found in repo root." && exit 1; fi
+          echo "Using ZIP: $ZIP"
           rm -rf project
-          unzip -q Accountability_Project.zip -d project
-          # If the zip contains a single top-level folder, move its contents up
-          INNER_DIR=$(find project -mindepth 1 -maxdepth 1 -type d | head -n 1)
-          if [ -d "$INNER_DIR/app" ] && [ -f "$INNER_DIR/settings.gradle" ]; then
+          unzip -q "$ZIP" -d project
+          # If the zip has a single top-level folder, move contents up
+          INNER_DIR=$(find project -mindepth 1 -maxdepth 1 -type d | head -n 1 || true)
+          if [ -n "$INNER_DIR" ] && [ -d "$INNER_DIR/app" ] && [ -f "$INNER_DIR/settings.gradle" ]; then
             shopt -s dotglob
             mv "$INNER_DIR"/* project/
           fi
