@@ -1,65 +1,35 @@
-name: Android APK (Debug)
+name: Accountability_Project (3) — Unzip
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
 
 jobs:
-  build:
+  unzip:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '17'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install SDK platforms & build-tools
+      # Optional safety: ensure unzip is available (usually preinstalled on ubuntu)
+      - name: Ensure unzip is installed
         run: |
-          yes | sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
-
-      - name: Unzip project (handles space & parentheses)
-        shell: bash
-        run: |
-          set -e
-          ZIP1="Accountability_Project.zip"
-          ZIP2="Accountability_Project (1).zip"
-          if [ -f "$ZIP1" ]; then ZIP="$ZIP1";
-          elif [ -f "$ZIP2" ]; then ZIP="$ZIP2";
-          else echo "ERROR: Neither '$ZIP1' nor '$ZIP2' found in repo root." && exit 1; fi
-          echo "Using ZIP: $ZIP"
-          rm -rf project
-          unzip -q "$ZIP" -d project
-          # If the zip has a single top-level folder, move contents up
-          INNER_DIR=$(find project -mindepth 1 -maxdepth 1 -type d | head -n 1 || true)
-          if [ -n "$INNER_DIR" ] && [ -d "$INNER_DIR/app" ] && [ -f "$INNER_DIR/settings.gradle" ]; then
-            shopt -s dotglob
-            mv "$INNER_DIR"/* project/
+          if ! command -v unzip >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y unzip
           fi
-          ls -la project
 
-      - name: Force AndroidX + Jetifier
+      # Clean any previous extracted folder so we always get a fresh state
+      - name: Remove previous extracted folder if present
         run: |
-          echo "android.useAndroidX=true" >> project/gradle.properties
-          echo "android.enableJetifier=true" >> project/gradle.properties
-          cat project/gradle.properties
+          rm -rf "Accountability_Project"
 
-      - name: Build debug APK
-        uses: gradle/gradle-build-action@v3
-        with:
-          gradle-version: 8.7
-          build-root-directory: project
-          arguments: assembleDebug
+      - name: Unzip Accountability_Project (3).zip into Accountability_Project/
+        run: |
+          unzip -o "Accountability_Project (3).zip" -d "Accountability_Project"
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: accountability-debug-apk
-          path: project/app/build/outputs/apk/debug/app-debug.apk
+      # Quick sanity check (you can delete this if you don't need it)
+      - name: List extracted contents
+        run: |
+          echo "Extracted files:"
+          ls -la "Accountability_Project"
