@@ -96,24 +96,24 @@ jobs:
           done
 
       - name: Set up Gradle (no wrapper case)
-        if: env.HAS_WRAPPER == 'false'
+        if: ${{ env.HAS_WRAPPER == 'false' }}
         uses: gradle/gradle-build-action@v3
         with:
           gradle-version: '8.7'
 
       - name: Build debug APK (with wrapper)
-        if: env.HAS_WRAPPER == 'true'
+        if: ${{ env.HAS_WRAPPER == 'true' }}
         run: |
           cd "$PROJECT_DIR"
           ./gradlew --no-daemon --warning-mode all --stacktrace --info assembleDebug
 
       - name: Build debug APK (no wrapper)
-        if: env.HAS_WRAPPER == 'false'
+        if: ${{ env.HAS_WRAPPER == 'false' }}
         run: |
           gradle -p "$PROJECT_DIR" --no-daemon --warning-mode all --stacktrace --info assembleDebug
 
       - name: Upload APK
-        if: always() # try to upload if it exists
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
