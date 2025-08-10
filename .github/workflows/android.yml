@@ -13,21 +13,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Detect directories that have leading/trailing whitespace (can break paths)
-      - name: Detect folders with leading/trailing whitespace
+      # Warn-only: list directories with leading/trailing whitespace (doesn't fail build)
+      - name: Detect folders with leading/trailing whitespace (warn-only)
+        shell: bash
         run: |
+          set -euo pipefail
           echo "Scanning for directory names with leading/trailing whitespace..."
           found=0
           while IFS= read -r -d '' d; do
             base="$(basename "$d")"
-            stripped="$(printf '%s' "$base" | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//')"
-            if [ "$base" != "$stripped" ]; then
-              echo "⚠️  Problem directory: $d"
+            if printf '%s' "$base" | grep -qE '^[[:space:]]|[[:space:]]$'; then
               found=1
+              printf '⚠️  Problem directory: %s\n' "$d"
             fi
           done < <(find . -type d -print0)
           if [ $found -eq 0 ]; then
-            echo "✅ No directories with leading/trailing whitespace found."
+            echo "✅ No problematic directory names found."
+          else
+            echo "::warning::One or more folders have leading/trailing spaces. Rename when convenient."
           fi
 
       - name: Set up JDK 17
@@ -39,165 +42,108 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v2
 
-      - name: Unzip project (handles spaces/parentheses; searches repo; picks highest #)
+      # Unzip: prefers the cleaned file you just downloaded; falls back to other zips
+      - name: Unzip project
         id: unzip
         shell: bash
         run: |
           set -euo pipefail
 
-          # Prefer Accountability_Project*.zip; otherwise pick newest *.zip
-          mapfile -d '' pref < <(find . -type f -iname 'Accountability_Project*.zip' -print0)
-          mapfile -d '' any  < <(find . -type f -iname '*.zip' -print0)
+          mapfile -d '' preferred < <(find . -maxdepth 2 -type f -iname 'Accountability_Project_clean.zip' -print0)
+          mapfile -d '' fallback  < <(find . -maxdepth 2 -type f -iname 'Accountability_Project*.zip' -print0)
+          mapfile -d '' anyzip   < <(find . -maxdepth 2 -type f -iname '*.zip' -print0)
 
           pick=""
-          if [ ${#pref[@]} -gt 0 ]; then
-            pick_basename="$(printf '%s\n' "${pref[@]##*/}" | sort -V | tail -n1)"
-            for p in "${pref[@]}"; do
-              if [ "${p##*/}" = "$pick_basename" ]; then pick="$p"; fi
-            done
-          elif [ ${#any[@]} -gt 0 ]; then
-            pick_basename="$(printf '%s\n' "${any[@]##*/}" | sort -V | tail -n1)"
-            for p in "${any[@]}"; do
-              if [ "${p##*/}" = "$pick_basename" ]; then pick="$p"; fi
-            done
-          fi
-
-          if [ -z "${pick:-}" ]; then
+          if [ ${#preferred[@]} -gt 0 ]; then
+            pick="${preferred[0]}"
+          elif [ ${#fallback[@]} -gt 0 ]; then
+            pick="$(printf '%s\n' "${fallback[@]##*/}" | sort -V | tail -n1)"
+            for p in "${fallback[@]}"; do [ "${p##*/}" = "$pick" ] && pick="$p"; done
+          elif [ ${#anyzip[@]} -gt 0 ]; then
+            pick="$(printf '%s\n' "${anyzip[@]##*/}" | sort -V | tail -n1)"
+            for p in "${anyzip[@]}"; do [ "${p##*/}" = "$pick" ] && pick="$p"; done
+          else
             echo "ERROR: No .zip files found in repository." >&2
             exit 1
           fi
 
           echo "Using zip: $pick"
+          mkdir -p extracted
           unzip -q "$pick" -d extracted
 
-          # Detect project dir (prefer Gradle wrapper; else settings.gradle[.kts])
-          gradlew_path="$(find extracted -type f -name gradlew -print -quit || true)"
-          if [ -n "$gradlew_path" ]; then
-            project_dir="$(dirname "$gradlew_path")"
-            echo "HAS_WRAPPER=true" >> "$GITHUB_ENV"
-            chmod +x "$project_dir/gradlew"
-          else
-            project_dir="$(find extracted -type f \( -name settings.gradle -o -name settings.gradle.kts \) -exec dirname {} \; | head -n1 || true)"
-            if [ -z "$project_dir" ]; then
-              echo "ERROR: Could not locate a Gradle project (no gradlew, no settings.gradle*)." >&2
-              exit 1
-            fi
-            echo "HAS_WRAPPER=false" >> "$GITHUB_ENV"
+          # Detect project dir via settings.gradle[.kts] (no wrapper present in your ZIP)
+          project_dir="$(find extracted -type f \( -name settings.gradle -o -name settings.gradle.kts \) -exec dirname {} \; | head -n1 || true)"
+          if [ -z "$project_dir" ]; then
+            echo "ERROR: Could not locate a Gradle project (no settings.gradle*)." >&2
+            exit 1
           fi
-
           echo "PROJECT_DIR=$project_dir" >> "$GITHUB_ENV"
           echo "Detected project dir: $project_dir"
 
-      - name: Show project structure
+      - name: Show project structure (top 200)
         run: |
-          echo "=== Project tree (top 200) ==="
           (cd "$PROJECT_DIR" && ls -la && echo && find . -maxdepth 3 -type d -print | head -n 200)
 
-      - name: Detect Android SDK requirements (compileSdk & buildTools)
-        id: detect_sdk
+      # Install the SDK platform matching your project (compileSdk = 34)
+      - name: Install Android SDK platform & build-tools
         shell: bash
         run: |
           set -euo pipefail
-          cd "$PROJECT_DIR"
-          files="$(find . -maxdepth 3 -type f \( -name 'build.gradle' -o -name 'build.gradle.kts' \))"
-          echo "Scanning files:"; echo "$files"
-          compileSdk=""
-          buildTools=""
-          if [ -n "$files" ] && grep -RqsE 'compileSdk(Vers|)\s*[:=]\s*[0-9]+' $files; then
-            compileSdk="$(grep -RIEho 'compileSdk(?:Version)?\s*[:=]?\s*([0-9]+)' $files | sed -E 's/[^0-9]*([0-9]+).*/\1/' | tail -n1)"
-          fi
-          if [ -n "$files" ] && grep -RqsE 'buildToolsVersion' $files; then
-            buildTools="$(grep -RIEho 'buildToolsVersion\s*["'\'']([0-9]+\.[0-9]+\.[0-9]+)["'\'']' $files | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/' | tail -n1)"
-          fi
-          echo "Detected compileSdk: ${compileSdk:-<none>}"
-          echo "Detected buildTools: ${buildTools:-<none>}"
-          echo "COMPILE_SDK=${compileSdk}" >> "$GITHUB_ENV"
-          echo "BUILD_TOOLS=${buildTools}" >> "$GITHUB_ENV"
+          sdkmanager "platforms;android-34" || true
+          # No explicit buildToolsVersion in your Gradle, so we use a sensible default:
+          sdkmanager "build-tools;34.0.0" || true
 
-      - name: Install required SDK platforms & build-tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -n "${COMPILE_SDK:-}" ]; then
-            echo "Installing platforms;android-${COMPILE_SDK}"
-            sdkmanager "platforms;android-${COMPILE_SDK}" || true
-          else
-            echo "No compileSdk detected; installing platforms;android-33 as fallback"
-            sdkmanager "platforms;android-33" || true
-          fi
-          if [ -n "${BUILD_TOOLS:-}" ]; then
-            echo "Installing build-tools;${BUILD_TOOLS}"
-            sdkmanager "build-tools;${BUILD_TOOLS}" || true
-          else
-            echo "No buildToolsVersion detected; installing build-tools;33.0.2 as fallback"
-            sdkmanager "build-tools;33.0.2" || true
-          fi
-
-      - name: Sanitize AndroidManifest.xml (strip BOM/XML decl/leading blanks)
+      # Safety net: if any manifest still has BOM or XML declaration, sanitize again
+      - name: Sanitize AndroidManifest.xml (BOM/XML decl/leading blanks)
         shell: bash
         run: |
           set -euo pipefail
           mapfile -d '' manifests < <(find "$PROJECT_DIR" -type f -name AndroidManifest.xml -print0 || true)
-          if [ ${#manifests[@]} -eq 0 ]; then
-            echo "WARNING: No AndroidManifest.xml found under $PROJECT_DIR"
-            exit 0
-          fi
           for f in "${manifests[@]}"; do
-            # Remove UTF-8 BOM and optional XML declaration + leading whitespace
             perl -i -0777 -pe 's/^\x{FEFF}//; s/\A(?:\s*<\?xml[^>]*\?>)?\s*//s' "$f"
-            echo "Sanitized: $f"
           done
 
-      - name: Install XML tools (for manifest validation)
-        run: sudo apt-get update && sudo apt-get install -y libxml2-utils
-
-      - name: Validate AndroidManifest.xml (fail-fast with line/col)
-        shell: bash
+      - name: Validate AndroidManifest.xml
         run: |
-          set -euo pipefail
-          echo "=== Searching for AndroidManifest.xml files ==="
+          sudo apt-get update && sudo apt-get install -y libxml2-utils
           mapfile -d '' manifests < <(find "$PROJECT_DIR" -type f -name AndroidManifest.xml -print0 || true)
-          if [ ${#manifests[@]} -eq 0 ]; then
-            echo "ERROR: No AndroidManifest.xml found under $PROJECT_DIR"
-            exit 1
-          fi
           for f in "${manifests[@]}"; do
-            echo "----- $f -----"
-            nl -ba "$f" | sed -n '1,160p'
-            echo "Validating XML..."
+            echo "Validating: $f"
             xmllint --noout "$f"
-            echo "OK"
-            echo
           done
 
-      - name: Set up Gradle (no wrapper case)
-        if: ${{ env.HAS_WRAPPER == 'false' }}
+      # Force Java & Kotlin to JVM 1.8 via a Gradle init script (no project edits)
+      - name: Create Gradle init script (JVM 1.8)
+        run: |
+          cat > "$GITHUB_WORKSPACE/jvm8.gradle.kts" <<'KTS'
+          import org.gradle.api.tasks.compile.JavaCompile
+          import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+          allprojects {
+              tasks.withType(JavaCompile::class.java).configureEach {
+                  options.release.set(8)
+              }
+              tasks.withType(KotlinCompile::class.java).configureEach {
+                  kotlinOptions.jvmTarget = "1.8"
+              }
+          }
+          KTS
+          echo "GRADLE_ARGS=--init-script $GITHUB_WORKSPACE/jvm8.gradle.kts" >> "$GITHUB_ENV"
+
+      # Use the official Gradle action (no wrapper in your project)
+      - name: Set up Gradle (no wrapper)
         uses: gradle/gradle-build-action@v3
         with:
           gradle-version: '8.7'
 
-      - name: Build debug APK (with wrapper)
-        if: ${{ env.HAS_WRAPPER == 'true' }}
+      - name: Build debug APK
         shell: bash
         run: |
           set -euo pipefail
-          cd "$PROJECT_DIR"
-          ./gradlew --no-daemon --warning-mode all --stacktrace --info assembleDebug 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
-          echo "Build (wrapper) exit code: ${PIPESTATUS[0]}"
-          exit ${PIPESTATUS[0]}
-
-      - name: Build debug APK (no wrapper)
-        if: ${{ env.HAS_WRAPPER == 'false' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gradle -p "$PROJECT_DIR" --no-daemon --warning-mode all --stacktrace --info assembleDebug 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
-          echo "Build (no wrapper) exit code: ${PIPESTATUS[0]}"
-          exit ${PIPESTATUS[0]}
+          gradle $GRADLE_ARGS -p "$PROJECT_DIR" --no-daemon --warning-mode all --stacktrace --info assembleDebug 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          ec=${PIPESTATUS[0]}; echo "Build exit code: $ec"; exit $ec
 
       - name: Show last 200 lines of build log (on failure)
         if: failure()
-        shell: bash
         run: |
           if [ -f "$GITHUB_WORKSPACE/build.log" ]; then
             echo "=== Tail of build.log ==="
