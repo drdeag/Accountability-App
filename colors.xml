@@ -1,0 +1,5 @@
+<resources>
+    <color name="green_done">#2E7D32</color>
+    <color name="red_missed">#C62828</color>
+    <color name="gray_skipped">#9E9E9E</color>
+</resources>
