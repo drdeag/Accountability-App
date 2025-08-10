@@ -1,23 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.dev.accountability">
-
-    <application
-        android:allowBackup="true"
-        android:label="Accountability"
-        android:icon="@mipmap/ic_launcher"
-        android:supportsRtl="true"
-        android:theme="@style/Theme.Material3.DayNight.NoActionBar">
-        <activity
-            android:name=".MainActivity"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-    </application>
-
-</manifest>name: Android APK (Debug)
+name: Android APK (Debug)
 
 on:
   push:
@@ -54,6 +35,7 @@ jobs:
           mapfile -d '' pref < <(find . -type f -iname 'Accountability_Project*.zip' -print0)
           mapfile -d '' any  < <(find . -type f -iname '*.zip' -print0)
 
+          pick=""
           if [ ${#pref[@]} -gt 0 ]; then
             pick_basename="$(printf '%s\n' "${pref[@]##*/}" | sort -V | tail -n1)"
             for p in "${pref[@]}"; do
@@ -64,7 +46,9 @@ jobs:
             for p in "${any[@]}"; do
               if [ "${p##*/}" = "$pick_basename" ]; then pick="$p"; fi
             done
-          else
+          fi
+
+          if [ -z "${pick:-}" ]; then
             echo "ERROR: No .zip files found in repository." >&2
             exit 1
           fi
@@ -73,13 +57,13 @@ jobs:
           unzip -q "$pick" -d extracted
 
           # Detect project dir (prefer wrapper; else settings.gradle[.kts])
-          gradlew_path="$(find extracted -type f -name 'gradlew' | head -n1 || true)"
+          gradlew_path="$(find extracted -type f -name gradlew -print -quit || true)"
           if [ -n "$gradlew_path" ]; then
             project_dir="$(dirname "$gradlew_path")"
             echo "HAS_WRAPPER=true" >> "$GITHUB_ENV"
             chmod +x "$project_dir/gradlew"
           else
-            project_dir="$(find extracted -type f \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) -exec dirname {} \; | head -n1 || true)"
+            project_dir="$(find extracted -type f \( -name settings.gradle -o -name settings.gradle.kts \) -exec dirname {} \; | head -n1 || true)"
             if [ -z "$project_dir" ]; then
               echo "ERROR: Could not locate a Gradle project (no gradlew, no settings.gradle*)." >&2
               exit 1
@@ -94,6 +78,35 @@ jobs:
         run: |
           echo "=== Project tree (top 200) ==="
           (cd "$PROJECT_DIR" && ls -la && echo && find . -maxdepth 3 -type d -print | head -n 200)
+
+      - name: Sanitize AndroidManifest.xml (strip BOM, XML decl, leading blanks)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' manifests < <(find "$PROJECT_DIR" -type f -name AndroidManifest.xml -print0 || true)
+          if [ ${#manifests[@]} -eq 0 ]; then
+            echo "WARNING: No AndroidManifest.xml found under $PROJECT_DIR"
+            exit 0
+          fi
+          printf '%s\0' "${manifests[@]}" | python3 - <<'PY'
+import sys, re, io, os
+paths = [p for p in sys.stdin.read().split('\0') if p]
+for p in paths:
+    with open(p, 'rb') as f:
+        data = f.read()
+    # Remove UTF-8 BOM if present; normalize newlines
+    text = data.decode('utf-8-sig').replace('\r\n','\n').replace('\r','\n')
+    # Strip leading whitespace
+    text = text.lstrip()
+    # Remove optional XML declaration at top, then strip leading whitespace again
+    if text.startswith('<?xml'):
+        end = text.find('?>')
+        if end != -1:
+            text = text[end+2:].lstrip()
+    with open(p, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(text)
+    print(f"Sanitized: {p}")
+PY
 
       - name: Install XML tools (for manifest validation)
         run: sudo apt-get update && sudo apt-get install -y libxml2-utils
