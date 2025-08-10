@@ -22,9 +22,6 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v2
 
-      - name: Install SDK platforms & build-tools
-        run: sdkmanager "platforms;android-33" "build-tools;33.0.2"
-
       - name: Unzip project (handles spaces/parentheses; searches repo; picks highest #)
         id: unzip
         shell: bash
@@ -79,6 +76,47 @@ jobs:
           echo "=== Project tree (top 200) ==="
           (cd "$PROJECT_DIR" && ls -la && echo && find . -maxdepth 3 -type d -print | head -n 200)
 
+      - name: Detect Android SDK requirements (compileSdk & buildTools)
+        id: detect_sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          files="$(find . -maxdepth 3 -type f \( -name 'build.gradle' -o -name 'build.gradle.kts' \))"
+          echo "Scanning files:"
+          echo "$files"
+          compileSdk=""
+          buildTools=""
+          if grep -RqsE 'compileSdk(Vers|)\s*[:=]\s*[0-9]+' $files; then
+            compileSdk="$(grep -RIEho 'compileSdk(?:Version)?\s*[:=]?\s*([0-9]+)' $files | sed -E 's/[^0-9]*([0-9]+).*/\1/' | tail -n1)"
+          fi
+          if grep -RqsE 'buildToolsVersion' $files; then
+            buildTools="$(grep -RIEho 'buildToolsVersion\s*["'\'']([0-9]+\.[0-9]+\.[0-9]+)["'\'']' $files | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/' | tail -n1)"
+          fi
+          echo "Detected compileSdk: ${compileSdk:-<none>}"
+          echo "Detected buildTools: ${buildTools:-<none>}"
+          echo "COMPILE_SDK=${compileSdk}" >> "$GITHUB_ENV"
+          echo "BUILD_TOOLS=${buildTools}" >> "$GITHUB_ENV"
+
+      - name: Install required SDK platforms & build-tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${COMPILE_SDK:-}" ]; then
+            echo "Installing platforms;android-${COMPILE_SDK}"
+            sdkmanager "platforms;android-${COMPILE_SDK}" || true
+          else
+            echo "No compileSdk detected; installing platforms;android-33 as fallback"
+            sdkmanager "platforms;android-33" || true
+          fi
+          if [ -n "${BUILD_TOOLS:-}" ]; then
+            echo "Installing build-tools;${BUILD_TOOLS}"
+            sdkmanager "build-tools;${BUILD_TOOLS}" || true
+          else
+            echo "No buildToolsVersion detected; installing build-tools;33.0.2 as fallback"
+            sdkmanager "build-tools;33.0.2" || true
+          fi
+
       - name: Sanitize AndroidManifest.xml (strip BOM/XML decl/leading blanks)
         shell: bash
         run: |
@@ -97,7 +135,7 @@ jobs:
       - name: Install XML tools (for manifest validation)
         run: sudo apt-get update && sudo apt-get install -y libxml2-utils
 
-      - name: Find and validate AndroidManifest.xml (fail-fast with line/col)
+      - name: Validate AndroidManifest.xml (fail-fast with line/col)
         shell: bash
         run: |
           set -euo pipefail
@@ -107,28 +145,14 @@ jobs:
             echo "ERROR: No AndroidManifest.xml found under $PROJECT_DIR"
             exit 1
           fi
-          err=0
           for f in "${manifests[@]}"; do
             echo "----- $f -----"
             nl -ba "$f" | sed -n '1,160p'
             echo "Validating XML..."
-            if ! xmllint --noout "$f" 2>xml.err; then
-              echo "xmllint error:"
-              cat xml.err
-              line=$(sed -n 's/.*line \([0-9]\+\).*/\1/p' xml.err | head -n1 || true)
-              if [ -n "$line" ]; then
-                start=$(( line>3 ? line-3 : 1 ))
-                end=$(( line+3 ))
-                echo "Context around line $line:"
-                nl -ba "$f" | sed -n "${start},${end}p"
-              fi
-              err=1
-            else
-              echo "OK"
-            fi
+            xmllint --noout "$f"
+            echo "OK"
             echo
           done
-          exit $err
 
       - name: Set up Gradle (no wrapper case)
         if: ${{ env.HAS_WRAPPER == 'false' }}
@@ -138,14 +162,22 @@ jobs:
 
       - name: Build debug APK (with wrapper)
         if: ${{ env.HAS_WRAPPER == 'true' }}
+        shell: bash
         run: |
+          set -euo pipefail
           cd "$PROJECT_DIR"
-          ./gradlew --no-daemon --warning-mode all --stacktrace --info assembleDebug
+          ./gradlew --no-daemon --warning-mode all --stacktrace --info assembleDebug 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          echo "Build (wrapper) exit code: ${PIPESTATUS[0]}"
+          exit ${PIPESTATUS[0]}
 
       - name: Build debug APK (no wrapper)
         if: ${{ env.HAS_WRAPPER == 'false' }}
+        shell: bash
         run: |
-          gradle -p "$PROJECT_DIR" --no-daemon --warning-mode all --stacktrace --info assembleDebug
+          set -euo pipefail
+          gradle -p "$PROJECT_DIR" --no-daemon --warning-mode all --stacktrace --info assembleDebug 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          echo "Build (no wrapper) exit code: ${PIPESTATUS[0]}"
+          exit ${PIPESTATUS[0]}
 
       - name: Upload APK
         if: always()
@@ -155,3 +187,12 @@ jobs:
           path: |
             ${{ env.PROJECT_DIR }}/**/outputs/apk/debug/*.apk
             ${{ env.PROJECT_DIR }}/**/outputs/apk/*/debug/*.apk
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            ${{ github.workspace }}/build.log
+            /home/runner/.gradle/daemon/*/*.log
