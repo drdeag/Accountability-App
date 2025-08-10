@@ -1,0 +1,5 @@
+- name: Force AndroidX + Jetifier
+        run: |
+          echo "android.useAndroidX=true" >> project/gradle.properties
+          echo "android.enableJetifier=true" >> project/gradle.properties
+          cat project/gradle.properties
