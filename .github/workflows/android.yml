@@ -1,35 +1,72 @@
-name: Accountability_Project (3) — Unzip
+name: Android APK (Debug)
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
 
 jobs:
-  unzip:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Set up job
+        run: echo "Starting build process..."
 
-      # Optional safety: ensure unzip is available (usually preinstalled on ubuntu)
-      - name: Ensure unzip is installed
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v2
+
+      - name: Install SDK platforms & build-tools
+        run: sdkmanager "platforms;android-33" "build-tools;33.0.2"
+
+      - name: Unzip project (handles spaces & parentheses; picks highest #)
+        shell: bash
         run: |
-          if ! command -v unzip >/dev/null 2>&1; then
-            sudo apt-get update -y
-            sudo apt-get install -y unzip
+          set -euo pipefail
+          shopt -s nullglob
+
+          # Look for Accountability_Project.zip or Accountability_Project (#).zip in the repo root
+          matches=()
+          for f in "Accountability_Project.zip" "Accountability_Project ("*").zip"; do
+            for m in $f; do
+              matches+=("$m")
+            done
+          done
+
+          if [ ${#matches[@]} -eq 0 ]; then
+            echo "ERROR: No Accountability_Project*.zip found in repo root."
+            echo "Files in repo root:"
+            ls -la
+            exit 1
           fi
 
-      # Clean any previous extracted folder so we always get a fresh state
-      - name: Remove previous extracted folder if present
-        run: |
-          rm -rf "Accountability_Project"
+          # Pick the file with the highest version number (or the plain one if only that exists)
+          pick="$(printf '%s\n' "${matches[@]}" | sort -V | tail -n1)"
+          echo "Using zip: $pick"
 
-      - name: Unzip Accountability_Project (3).zip into Accountability_Project/
-        run: |
-          unzip -o "Accountability_Project (3).zip" -d "Accountability_Project"
+          unzip -q "$pick" -d .
 
-      # Quick sanity check (you can delete this if you don't need it)
-      - name: List extracted contents
+      - name: Force AndroidX + Jetifier
         run: |
-          echo "Extracted files:"
-          ls -la "Accountability_Project"
+          yes | ./gradlew wrapper --gradle-version 7.4
+          ./gradlew dependencies
+          ./gradlew jetifier
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v3
+        with:
+          name: app-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
