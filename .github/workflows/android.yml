@@ -49,7 +49,8 @@ jobs:
           unzip -q "$pick" -d extracted
 
           # Detect project dir (wrapper first, then settings.gradle[.kts])
-          if gradlew_path="$(find extracted -type f -name gradlew | head -n1)"; then
+          gradlew_path="$(find extracted -type f -name gradlew | head -n1 || true)"
+          if [ -n "$gradlew_path" ]; then
             project_dir="$(dirname "$gradlew_path")"
             echo "HAS_WRAPPER=true" >> "$GITHUB_ENV"
           else
