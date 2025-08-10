@@ -31,76 +31,89 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Collect candidate zips anywhere in the repo. Prefer "Accountability_Project*.zip" but allow any *.zip.
+          # Prefer Accountability_Project*.zip, else fallback to newest *.zip
           mapfile -d '' pref < <(find . -type f -iname 'Accountability_Project*.zip' -print0)
           mapfile -d '' any  < <(find . -type f -iname '*.zip' -print0)
 
           if [ ${#pref[@]} -gt 0 ]; then
-            mapfile -t zips < <(printf '%s\n' "${pref[@]##*/}" | sort -V)
-            # Re-map to full paths
-            pick=""
-            for z in "${zips[@]}"; do
-              # find original full path for this basename
-              for p in "${pref[@]}"; do
-                if [ "${p##*/}" = "$z" ]; then pick="$p"; fi
-              done
-            done
+            pick="$(printf '%s\n' "${pref[@]##*/}" | sort -V | tail -n1)"
+            for p in "${pref[@]}"; do [ "${p##*/}" = "$pick" ] && pick="$p"; done
           elif [ ${#any[@]} -gt 0 ]; then
-            # Fallback: any zip (last in version-sort order)
             pick="$(printf '%s\n' "${any[@]##*/}" | sort -V | tail -n1)"
-            for p in "${any[@]}"; do
-              if [ "${p##*/}" = "$pick" ]; then pick="$p"; fi
-            done
+            for p in "${any[@]}"; do [ "${p##*/}" = "$pick" ] && pick="$p"; done
           else
-            echo "ERROR: No .zip files found in repository." >&2
-            exit 1
+            echo "ERROR: No .zip files found."; exit 1
           fi
 
           echo "Using zip: $pick"
           unzip -q "$pick" -d extracted
 
-          # Prefer a directory that contains gradlew; otherwise use settings.gradle[.kts]
-          gradlew_path="$(find extracted -type f -name 'gradlew' | head -n1 || true)"
-          if [ -n "$gradlew_path" ]; then
+          # Detect project dir (wrapper first, then settings.gradle[.kts])
+          if gradlew_path="$(find extracted -type f -name gradlew | head -n1)"; then
             project_dir="$(dirname "$gradlew_path")"
-            echo "Detected Gradle wrapper in: $project_dir"
             echo "HAS_WRAPPER=true" >> "$GITHUB_ENV"
-            echo "PROJECT_DIR=$project_dir" >> "$GITHUB_ENV"
-            chmod +x "$project_dir/gradlew"
-            exit 0
+          else
+            project_dir="$(find extracted -type f \( -name settings.gradle -o -name settings.gradle.kts \) -exec dirname {} \; | head -n1 || true)"
+            if [ -z "$project_dir" ]; then
+              echo "ERROR: No Gradle wrapper and no settings.gradle* found."; exit 1
+            fi
+            echo "HAS_WRAPPER=false" >> "$GITHUB_ENV"
           fi
 
-          # No wrapper — find a Gradle project root by settings.gradle or settings.gradle.kts
-          settings_dir="$(find extracted -type f \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) -exec dirname {} \; | head -n1 || true)"
-          if [ -z "$settings_dir" ]; then
-            echo "ERROR: Could not locate a Gradle project (no gradlew, no settings.gradle*)." >&2
-            exit 1
+          echo "PROJECT_DIR=$project_dir" >> "$GITHUB_ENV"
+          echo "Detected project dir: $project_dir"
+
+          # Ensure wrapper is executable if present
+          if [ -f "$project_dir/gradlew" ]; then chmod +x "$project_dir/gradlew"; fi
+
+      - name: Show project structure
+        run: |
+          echo "=== Project tree (top 200) ==="
+          (cd "$PROJECT_DIR" && ls -la && echo && find . -maxdepth 3 -type d -print | head -n 200)
+
+      - name: Install XML tools (for manifest validation)
+        run: sudo apt-get update && sudo apt-get install -y libxml2-utils
+
+      - name: Find and validate AndroidManifest.xml
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== Searching for AndroidManifest.xml files ==="
+          mapfile -d '' manifests < <(find "$PROJECT_DIR" -type f -name AndroidManifest.xml -print0 || true)
+          if [ ${#manifests[@]} -eq 0 ]; then
+            echo "WARNING: No AndroidManifest.xml found under $PROJECT_DIR"
           fi
+          for f in "${manifests[@]}"; do
+            echo "----- $f -----"
+            nl -ba "$f" | sed -n '1,160p'
+            echo "Validating XML with xmllint..."
+            if ! xmllint --noout "$f"; then
+              echo "xmllint found a parsing error in $f"
+            else
+              echo "OK: $f"
+            fi
+            echo
+          done
 
-          echo "Detected Gradle project root: $settings_dir"
-          echo "HAS_WRAPPER=false" >> "$GITHUB_ENV"
-          echo "PROJECT_DIR=$settings_dir" >> "$GITHUB_ENV"
-
-      # If there is NO wrapper, set up a Gradle runtime we can use
       - name: Set up Gradle (no wrapper case)
         if: env.HAS_WRAPPER == 'false'
         uses: gradle/gradle-build-action@v3
         with:
-          # Safe default; adjust if your project requires a specific Gradle version
           gradle-version: '8.7'
 
       - name: Build debug APK (with wrapper)
         if: env.HAS_WRAPPER == 'true'
         run: |
           cd "$PROJECT_DIR"
-          ./gradlew --no-daemon assembleDebug
+          ./gradlew --no-daemon --warning-mode all --stacktrace --info assembleDebug
 
       - name: Build debug APK (no wrapper)
         if: env.HAS_WRAPPER == 'false'
         run: |
-          gradle -p "$PROJECT_DIR" --no-daemon assembleDebug
+          gradle -p "$PROJECT_DIR" --no-daemon --warning-mode all --stacktrace --info assembleDebug
 
       - name: Upload APK
+        if: always() # try to upload if it exists
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
